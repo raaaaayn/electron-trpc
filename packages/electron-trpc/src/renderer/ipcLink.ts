@@ -39,8 +39,10 @@ const getElectronTRPC = () => {
 class IPCClient {
   #pendingRequests = new Map<string | number, IPCRequest>();
   #electronTRPC = getElectronTRPC();
+  #credentials:unknown = null;
 
-  constructor() {
+  constructor(getCredentials?: () => unknown) {
+    this.#credentials = getCredentials?.();
     this.#electronTRPC.onMessage((response: TRPCResponseMessage) => {
       this.#handleResponse(response);
     });
@@ -69,7 +71,11 @@ class IPCClient {
       op,
     });
 
-    this.#electronTRPC.sendMessage({ method: 'request', operation: op });
+    this.#electronTRPC.sendMessage({
+      method: 'request',
+      operation: op,
+      credentials: this.#credentials,
+    });
 
     return () => {
       const callbacks = this.#pendingRequests.get(id)?.callbacks;
@@ -88,9 +94,9 @@ class IPCClient {
   }
 }
 
-export function ipcLink<TRouter extends AnyRouter>(): TRPCLink<TRouter> {
+export function ipcLink<TRouter extends AnyRouter>(credentials?: () => unknown): TRPCLink<TRouter> {
   return (runtime) => {
-    const client = new IPCClient();
+    const client = new IPCClient(credentials);
 
     return ({ op }) => {
       return observable((observer) => {

@@ -1,13 +1,31 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createTRPCProxyClient } from '@trpc/client';
-import { initTRPC } from '@trpc/server';
+import { TRPCError, initTRPC } from '@trpc/server';
 import type { TRPCResponseMessage } from '@trpc/server/rpc';
 import z from 'zod';
 import type { RendererGlobalElectronTRPC } from '../../types';
 import { ipcLink } from '../ipcLink';
 import superjson from 'superjson';
+import type { CreateContextOptions } from '../../main';
 
-const t = initTRPC.create();
+export const createTRPCContext = async (opts: CreateContextOptions) => {
+  console.log(opts.event);
+  return {
+    session: { user: opts.event.credentials },
+  };
+};
+const t = initTRPC.context<typeof createTRPCContext>().create();
+const enforceUserIsAuthed = t.middleware(({ ctx, next }) => {
+  if (!ctx.session?.user) {
+    throw new TRPCError({ code: 'UNAUTHORIZED' });
+  }
+  return next({
+    ctx: {
+      session: { ...ctx.session, user: ctx.session.user },
+    },
+  });
+});
+const protectedProcedure = t.procedure.use(enforceUserIsAuthed);
 const router = t.router({
   testQuery: t.procedure.query(() => 'query success'),
   testMutation: t.procedure.input(z.string()).mutation(() => 'mutation success'),
@@ -22,6 +40,7 @@ const router = t.router({
     .query((input) => {
       return input;
     }),
+  testProtectedQuery: protectedProcedure.query(() => 'protected'),
 });
 
 type Router = typeof router;
@@ -314,5 +333,80 @@ describe('ipcLink', () => {
 
     expect(queryResponse).toHaveBeenCalledTimes(1);
     expect(queryResponse).toHaveBeenCalledWith({ ...input, date: input.date.toISOString() });
+  });
+
+  describe('credentials', () => {
+    const mock = vi.mocked(electronTRPC);
+
+    test('credentials are set', async () => {
+      const client: ReturnType<typeof createTRPCProxyClient<Router>> = createTRPCProxyClient({
+        links: [ipcLink(() => 'secret')],
+      });
+      const queryResponse = vi.fn();
+
+      const query = client.testProtectedQuery.query().then(queryResponse);
+
+      expect(mock.sendMessage).toHaveBeenCalledTimes(1);
+      expect(mock.sendMessage).toHaveBeenCalledWith({
+        method: 'request',
+        operation: {
+          context: {},
+          id: 1,
+          input: undefined,
+          path: 'testProtectedQuery',
+          type: 'query',
+        },
+        credentials: 'secret',
+      });
+
+      expect(queryResponse).not.toHaveBeenCalled();
+
+      handlers[0]({
+        id: 1,
+        result: {
+          type: 'data',
+          data: 'query success',
+        },
+      });
+
+      await query;
+
+      expect(queryResponse).toHaveBeenCalledTimes(1);
+      expect(queryResponse).toHaveBeenCalledWith('query success');
+    });
+
+    test('should not access protected route without credentials', async () => {
+      const client: ReturnType<typeof createTRPCProxyClient<Router>> = createTRPCProxyClient({
+        links: [ipcLink()],
+      });
+      const queryResponse = vi.fn();
+
+      const query = client.testProtectedQuery.query().then(queryResponse);
+
+      expect(mock.sendMessage).toHaveBeenCalledTimes(1);
+      expect(mock.sendMessage).toHaveBeenCalledWith({
+        method: 'request',
+        operation: {
+          context: {},
+          id: 1,
+          input: undefined,
+          path: 'testProtectedQuery',
+          type: 'query',
+        },
+      });
+
+      handlers[0]({
+        id: 1,
+        result: {
+          type: 'data',
+          data: 'query success',
+        },
+      });
+
+      await query;
+
+      expect(queryResponse).toHaveBeenCalledTimes(1);
+      expect(queryResponse).toHaveBeenCalledWith('query success');
+    });
   });
 });

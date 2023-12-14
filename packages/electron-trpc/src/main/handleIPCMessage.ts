@@ -40,7 +40,8 @@ export async function handleIPCMessage<TRouter extends AnyRouter>({
     ? router._def._config.transformer.input.deserialize(serializedInput)
     : undefined;
 
-  const ctx = (await createContext?.({ event })) ?? {};
+  const ctx =
+    (await createContext?.({ event: { ...event, credentials: message.credentials } })) ?? {};
 
   const respond = (response: TRPCResponseMessage) => {
     if (event.sender.isDestroyed()) return;
